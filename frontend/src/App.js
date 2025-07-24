@@ -386,10 +386,13 @@ function App() {
                       )}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`text-sm ${product.stock_quantity <= 10 ? 'text-red-600 font-bold' : 'text-gray-900'}`}>
+                      <span className={`text-sm ${product.stock_quantity <= (product.low_stock_threshold || 10) ? 'text-red-600 font-bold' : 'text-gray-900'}`}>
                         {product.stock_quantity}
-                        {product.stock_quantity <= 10 && ' ⚠️'}
+                        {product.stock_quantity <= (product.low_stock_threshold || 10) && ' ⚠️'}
                       </span>
+                      <div className="text-xs text-gray-500">
+                        Seuil: {product.low_stock_threshold || 10}
+                      </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                       {product.category}
