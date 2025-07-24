@@ -184,6 +184,7 @@ function App() {
       price: '',
       cost_price: '',
       stock_quantity: '',
+      low_stock_threshold: '10',
       category: '',
       subcategory: '',
       description: '',
