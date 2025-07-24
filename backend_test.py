@@ -355,17 +355,20 @@ class StockManagementAPITester:
         self.test_health_check()
         self.test_get_categories()
 
-        # Product CRUD tests
-        self.test_create_product_boucherie()
+        # Product CRUD tests with custom thresholds
+        self.test_create_product_with_custom_threshold_alert()
+        self.test_create_product_with_custom_threshold_no_alert()
+        self.test_create_product_default_threshold_alert()
         self.test_create_product_artisanat()
         self.test_get_products()
         self.test_get_products_with_filters()
         self.test_get_single_product()
         self.test_update_product()
+        self.test_update_product_threshold()
 
-        # Dashboard and analytics tests
-        self.test_dashboard_stats()
-        self.test_low_stock_alerts()
+        # Dashboard and analytics tests with custom thresholds
+        self.test_dashboard_stats_with_custom_thresholds()
+        self.test_low_stock_alerts_with_custom_thresholds()
         self.test_export_products()
 
         # Cleanup test
