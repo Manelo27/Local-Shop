@@ -249,11 +249,12 @@ async def get_dashboard_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/alerts/low-stock", response_model=List[StockAlert])
-async def get_low_stock_alerts(threshold: int = 10):
+async def get_low_stock_alerts():
     try:
+        # Find products where stock_quantity <= low_stock_threshold
         products = list(products_collection.find(
-            {"stock_quantity": {"$lte": threshold}},
-            {"_id": 0, "id": 1, "name": 1, "stock_quantity": 1}
+            {"$expr": {"$lte": ["$stock_quantity", "$low_stock_threshold"]}},
+            {"_id": 0, "id": 1, "name": 1, "stock_quantity": 1, "low_stock_threshold": 1}
         ))
         
         alerts = [
@@ -261,7 +262,7 @@ async def get_low_stock_alerts(threshold: int = 10):
                 product_id=p["id"],
                 name=p["name"],
                 current_stock=p["stock_quantity"],
-                threshold=threshold
+                threshold=p.get("low_stock_threshold", 10)
             )
             for p in products
         ]
