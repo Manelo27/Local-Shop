@@ -1,18 +1,29 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pymongo import MongoClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
+import jwt
+import bcrypt
+from geopy.geocoders import Nominatim
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Stock Management API", version="1.0.0")
+app = FastAPI(title="Local Shop Pro API", version="1.0.0", description="API pour la gestion de stock des commerçants locaux")
+
+# JWT Configuration
+JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key-change-in-production')
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRATION_HOURS = 24
+
+security = HTTPBearer()
 
 # CORS middleware
 app.add_middleware(
@@ -26,22 +37,105 @@ app.add_middleware(
 # MongoDB connection
 MONGO_URL = os.environ.get('MONGO_URL', 'mongodb://localhost:27017/')
 client = MongoClient(MONGO_URL)
-db = client.stock_management
+db = client.local_shop_pro
+merchants_collection = db.merchants
 products_collection = db.products
 
+# Enhanced categories for French commerce
+STANDARD_CATEGORIES = [
+    "ALIMENTAIRE",
+    "BOISSONS", 
+    "BOULANGERIE_PATISSERIE",
+    "BOUCHERIE_CHARCUTERIE",
+    "POISSONNERIE",
+    "FRUITS_LEGUMES",
+    "EPICERIE_FINE",
+    "PRODUITS_BIO",
+    "HYGIENE_BEAUTE",
+    "PHARMACIE_PARAPHARMACIE",
+    "TEXTILE_MODE",
+    "CHAUSSURES_MAROQUINERIE",
+    "BIJOUTERIE_HORLOGERIE",
+    "ELECTRONIQUE_INFORMATIQUE",
+    "TELEPHONIE_ACCESSOIRES",
+    "MAISON_DECORATION",
+    "BRICOLAGE_JARDINAGE",
+    "SPORT_LOISIRS",
+    "LIBRAIRIE_PAPETERIE",
+    "JOUETS_PUERICULTURE",
+    "ARTISANAT_ART",
+    "FLEURS_PLANTES",
+    "AUTOMOBILE_MOTO",
+    "TABAC_PRESSE",
+    "OPTIQUE",
+    "AUTRE"
+]
+
+SUBCATEGORIES = {
+    "ALIMENTAIRE": ["CONSERVES", "SURGELES", "FRAIS", "SEC", "EPICERIE_GENERALE"],
+    "BOISSONS": ["ALCOOLISEES", "NON_ALCOOLISEES", "CHAUDES", "VINS_SPIRITUEUX"],
+    "BOULANGERIE_PATISSERIE": ["PAIN", "VIENNOISERIES", "PATISSERIES", "GATEAUX_COMMANDE"],
+    "BOUCHERIE_CHARCUTERIE": ["VIANDE_FRAICHE", "VOLAILLE", "CHARCUTERIE", "PLATS_PREPARES"],
+    "POISSONNERIE": ["POISSONS_FRAIS", "FRUITS_MER", "POISSONS_FUMES", "CONSERVES_MER"],
+    "FRUITS_LEGUMES": ["FRUITS_FRAIS", "LEGUMES_FRAIS", "FRUITS_SECS", "LEGUMES_PREPARES"],
+    "HYGIENE_BEAUTE": ["HYGIENE_CORPORELLE", "COSMETIQUES", "PARFUMS", "SOINS_VISAGE"],
+    "TEXTILE_MODE": ["VETEMENTS_HOMME", "VETEMENTS_FEMME", "VETEMENTS_ENFANT", "ACCESSOIRES_MODE"],
+    "ELECTRONIQUE_INFORMATIQUE": ["ORDINATEURS", "SMARTPHONES", "AUDIO_VIDEO", "ACCESSOIRES_TECH"],
+    "MAISON_DECORATION": ["MOBILIER", "DECORATION", "TEXTILE_MAISON", "LUMINAIRES"],
+    "ARTISANAT_ART": ["FAIT_MAIN", "MATERIAUX_CREATION", "OUTILS_ARTISANAT", "OEUVRES_ART"],
+    "SPORT_LOISIRS": ["EQUIPEMENT_SPORT", "VETEMENTS_SPORT", "JEUX_SOCIETE", "LOISIRS_CREATIFS"]
+}
+
 # Pydantic models
+class MerchantLocation(BaseModel):
+    address: str
+    city: str
+    postal_code: str
+    country: str = "France"
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+class MerchantProfile(BaseModel):
+    business_name: str
+    business_type: str  # Type de commerce
+    siret: Optional[str] = None
+    phone: Optional[str] = None
+    email: EmailStr
+    location: MerchantLocation
+    description: Optional[str] = None
+
+class MerchantRegistration(BaseModel):
+    email: EmailStr
+    password: str
+    profile: MerchantProfile
+
+class MerchantLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+class Merchant(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    email: EmailStr
+    password_hash: str
+    profile: MerchantProfile
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
 class Product(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    merchant_id: str  # Lien vers le commerçant
     name: str
     barcode: Optional[str] = None
     price: float
     cost_price: Optional[float] = None
     stock_quantity: int
-    low_stock_threshold: int = 10  # Seuil personnalisable pour alerte stock faible
+    low_stock_threshold: int = 10
     category: str
     subcategory: Optional[str] = None
     description: Optional[str] = None
     supplier: Optional[str] = None
+    is_available: bool = True  # Disponible pour la recherche publique
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -56,6 +150,7 @@ class ProductUpdate(BaseModel):
     subcategory: Optional[str] = None
     description: Optional[str] = None
     supplier: Optional[str] = None
+    is_available: Optional[bool] = None
 
 class StockAlert(BaseModel):
     product_id: str
@@ -63,26 +158,57 @@ class StockAlert(BaseModel):
     current_stock: int
     threshold: int = 10
 
-# Standard categories for French commerce
-STANDARD_CATEGORIES = [
-    "ALIMENTAIRE",
-    "BOISSONS", 
-    "HYGIENE_BEAUTE",
-    "TEXTILE",
-    "ELECTRONIQUE",
-    "MAISON_JARDIN",
-    "SPORT_LOISIRS",
-    "ARTISANAT",
-    "AUTRE"
-]
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    merchant_id: str
+    business_name: str
 
-SUBCATEGORIES = {
-    "ALIMENTAIRE": ["BOUCHERIE", "BOULANGERIE", "EPICERIE", "FRUITS_LEGUMES", "PRODUITS_FRAIS"],
-    "BOISSONS": ["ALCOOLISEES", "NON_ALCOOLISEES", "CHAUDES"],
-    "HYGIENE_BEAUTE": ["HYGIENE", "COSMETIQUES", "PARFUMS"],
-    "TEXTILE": ["VETEMENTS", "CHAUSSURES", "ACCESSOIRES"],
-    "ARTISANAT": ["FAIT_MAIN", "MATERIAUX", "OUTILS"]
-}
+# Utility functions
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def verify_password(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+
+def create_jwt_token(merchant_id: str) -> str:
+    payload = {
+        "merchant_id": merchant_id,
+        "exp": datetime.utcnow() + timedelta(hours=JWT_EXPIRATION_HOURS)
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def verify_jwt_token(token: str) -> Optional[str]:
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload.get("merchant_id")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expiré")
+    except jwt.JWTError:
+        raise HTTPException(status_code=401, detail="Token invalide")
+
+async def get_current_merchant(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    merchant_id = verify_jwt_token(credentials.credentials)
+    merchant = merchants_collection.find_one({"id": merchant_id}, {"_id": 0})
+    if not merchant:
+        raise HTTPException(status_code=401, detail="Commerçant introuvable")
+    return merchant
+
+def geocode_address(location: MerchantLocation) -> MerchantLocation:
+    """Convert address to GPS coordinates"""
+    try:
+        geolocator = Nominatim(user_agent="local-shop-pro")
+        full_address = f"{location.address}, {location.city}, {location.postal_code}, {location.country}"
+        location_result = geolocator.geocode(full_address)
+        
+        if location_result:
+            location.latitude = location_result.latitude
+            location.longitude = location_result.longitude
+        
+        return location
+    except Exception as e:
+        logger.warning(f"Geocoding failed: {str(e)}")
+        return location
 
 @app.get("/api/health")
 async def health_check():
