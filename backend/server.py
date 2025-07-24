@@ -9,8 +9,10 @@ import os
 import uuid
 from datetime import datetime, timedelta
 import logging
-import jwt
-import bcrypt
+import hashlib
+import secrets
+from passlib.context import CryptContext
+from jose import JWTError, jwt
 from geopy.geocoders import Nominatim
 
 logging.basicConfig(level=logging.INFO)
@@ -19,10 +21,12 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Local Shop Pro API", version="1.0.0", description="API pour la gestion de stock des commerçants locaux")
 
 # JWT Configuration
-JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key-change-in-production')
+JWT_SECRET = os.environ.get('JWT_SECRET', 'local-shop-pro-secret-key-2025')
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
 
 # CORS middleware
@@ -68,6 +72,8 @@ STANDARD_CATEGORIES = [
     "AUTOMOBILE_MOTO",
     "TABAC_PRESSE",
     "OPTIQUE",
+    "AUTO_ENTREPRENEUR",
+    "SERVICES",
     "AUTRE"
 ]
 
@@ -83,7 +89,9 @@ SUBCATEGORIES = {
     "ELECTRONIQUE_INFORMATIQUE": ["ORDINATEURS", "SMARTPHONES", "AUDIO_VIDEO", "ACCESSOIRES_TECH"],
     "MAISON_DECORATION": ["MOBILIER", "DECORATION", "TEXTILE_MAISON", "LUMINAIRES"],
     "ARTISANAT_ART": ["FAIT_MAIN", "MATERIAUX_CREATION", "OUTILS_ARTISANAT", "OEUVRES_ART"],
-    "SPORT_LOISIRS": ["EQUIPEMENT_SPORT", "VETEMENTS_SPORT", "JEUX_SOCIETE", "LOISIRS_CREATIFS"]
+    "SPORT_LOISIRS": ["EQUIPEMENT_SPORT", "VETEMENTS_SPORT", "JEUX_SOCIETE", "LOISIRS_CREATIFS"],
+    "BIJOUTERIE_HORLOGERIE": ["BIJOUX", "MONTRES", "REPARATION", "SUR_MESURE"],
+    "AUTOMOBILE_MOTO": ["PIECES_DETACHEES", "ACCESSOIRES", "ENTRETIEN", "EQUIPEMENT"]
 }
 
 # Pydantic models
@@ -97,10 +105,9 @@ class MerchantLocation(BaseModel):
 
 class MerchantProfile(BaseModel):
     business_name: str
-    business_type: str  # Type de commerce
+    business_type: str
     siret: Optional[str] = None
     phone: Optional[str] = None
-    email: EmailStr
     location: MerchantLocation
     description: Optional[str] = None
 
@@ -124,7 +131,7 @@ class Merchant(BaseModel):
 
 class Product(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    merchant_id: str  # Lien vers le commerçant
+    merchant_id: str
     name: str
     barcode: Optional[str] = None
     price: float
@@ -135,7 +142,7 @@ class Product(BaseModel):
     subcategory: Optional[str] = None
     description: Optional[str] = None
     supplier: Optional[str] = None
-    is_available: bool = True  # Disponible pour la recherche publique
+    is_available: bool = True
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -164,12 +171,19 @@ class TokenResponse(BaseModel):
     merchant_id: str
     business_name: str
 
+class MerchantProfileResponse(BaseModel):
+    id: str
+    email: str
+    profile: MerchantProfile
+    is_active: bool
+    created_at: datetime
+
 # Utility functions
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    return pwd_context.hash(password)
 
 def verify_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+    return pwd_context.verify(password, hashed)
 
 def create_jwt_token(merchant_id: str) -> str:
     payload = {
@@ -184,12 +198,12 @@ def verify_jwt_token(token: str) -> Optional[str]:
         return payload.get("merchant_id")
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expiré")
-    except jwt.JWTError:
+    except JWTError:
         raise HTTPException(status_code=401, detail="Token invalide")
 
 async def get_current_merchant(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
     merchant_id = verify_jwt_token(credentials.credentials)
-    merchant = merchants_collection.find_one({"id": merchant_id}, {"_id": 0})
+    merchant = merchants_collection.find_one({"id": merchant_id, "is_active": True}, {"_id": 0})
     if not merchant:
         raise HTTPException(status_code=401, detail="Commerçant introuvable")
     return merchant
@@ -204,16 +218,21 @@ def geocode_address(location: MerchantLocation) -> MerchantLocation:
         if location_result:
             location.latitude = location_result.latitude
             location.longitude = location_result.longitude
+            logger.info(f"Geocoded address: {location.latitude}, {location.longitude}")
+        else:
+            logger.warning(f"Could not geocode address: {full_address}")
         
         return location
     except Exception as e:
         logger.warning(f"Geocoding failed: {str(e)}")
         return location
 
+# Health check
 @app.get("/api/health")
 async def health_check():
-    return {"status": "healthy", "timestamp": datetime.now()}
+    return {"status": "healthy", "service": "Local Shop Pro API", "timestamp": datetime.now()}
 
+# Categories endpoint
 @app.get("/api/categories")
 async def get_categories():
     return {
@@ -221,9 +240,98 @@ async def get_categories():
         "subcategories": SUBCATEGORIES
     }
 
-@app.post("/api/products", response_model=Product)
-async def create_product(product: Product):
+# Authentication endpoints
+@app.post("/api/auth/register", response_model=TokenResponse)
+async def register_merchant(registration: MerchantRegistration):
     try:
+        # Check if email already exists
+        existing_merchant = merchants_collection.find_one({"email": registration.email})
+        if existing_merchant:
+            raise HTTPException(status_code=400, detail="Email déjà utilisé")
+        
+        # Geocode the address
+        location_with_coords = geocode_address(registration.profile.location)
+        registration.profile.location = location_with_coords
+        
+        # Create merchant
+        merchant = Merchant(
+            email=registration.email,
+            password_hash=hash_password(registration.password),
+            profile=registration.profile
+        )
+        
+        # Save to database
+        result = merchants_collection.insert_one(merchant.dict())
+        if not result.inserted_id:
+            raise HTTPException(status_code=500, detail="Erreur lors de la création du compte")
+        
+        # Generate token
+        token = create_jwt_token(merchant.id)
+        
+        logger.info(f"New merchant registered: {registration.email}")
+        
+        return TokenResponse(
+            access_token=token,
+            merchant_id=merchant.id,
+            business_name=registration.profile.business_name
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Registration error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Erreur lors de l'inscription")
+
+@app.post("/api/auth/login", response_model=TokenResponse)
+async def login_merchant(login: MerchantLogin):
+    try:
+        # Find merchant
+        merchant = merchants_collection.find_one({"email": login.email, "is_active": True}, {"_id": 0})
+        if not merchant:
+            raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
+        
+        # Verify password
+        if not verify_password(login.password, merchant["password_hash"]):
+            raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
+        
+        # Generate token
+        token = create_jwt_token(merchant["id"])
+        
+        logger.info(f"Merchant logged in: {login.email}")
+        
+        return TokenResponse(
+            access_token=token,
+            merchant_id=merchant["id"],
+            business_name=merchant["profile"]["business_name"]
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error: {str(e)}")
+        raise HTTPException(status_code=401, detail="Erreur lors de la connexion")
+
+@app.get("/api/auth/profile", response_model=MerchantProfileResponse)
+async def get_merchant_profile(current_merchant: dict = Depends(get_current_merchant)):
+    try:
+        return MerchantProfileResponse(
+            id=current_merchant["id"],
+            email=current_merchant["email"],
+            profile=current_merchant["profile"],
+            is_active=current_merchant["is_active"],
+            created_at=current_merchant["created_at"]
+        )
+    except Exception as e:
+        logger.error(f"Profile error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Erreur lors de la récupération du profil")
+
+# Products endpoints (protected)
+@app.post("/api/products", response_model=Product)
+async def create_product(product: Product, current_merchant: dict = Depends(get_current_merchant)):
+    try:
+        # Associate product with current merchant
+        product.merchant_id = current_merchant["id"]
+        
         # Calculate margin if cost_price is provided
         margin = None
         if product.cost_price and product.price > product.cost_price:
@@ -235,18 +343,22 @@ async def create_product(product: Product):
         
         result = products_collection.insert_one(product_dict)
         if result.inserted_id:
-            logger.info(f"Created product: {product.name}")
+            logger.info(f"Created product: {product.name} for merchant: {current_merchant['profile']['business_name']}")
             return product
         else:
-            raise HTTPException(status_code=500, detail="Failed to create product")
+            raise HTTPException(status_code=500, detail="Erreur lors de la création du produit")
     except Exception as e:
         logger.error(f"Error creating product: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/products", response_model=List[Product])
-async def get_products(category: Optional[str] = None, search: Optional[str] = None):
+async def get_products(
+    current_merchant: dict = Depends(get_current_merchant),
+    category: Optional[str] = None, 
+    search: Optional[str] = None
+):
     try:
-        query = {}
+        query = {"merchant_id": current_merchant["id"]}
         if category:
             query["category"] = category
         if search:
@@ -263,11 +375,15 @@ async def get_products(category: Optional[str] = None, search: Optional[str] = N
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/products/{product_id}", response_model=Product)
-async def get_product(product_id: str):
+async def get_product(product_id: str, current_merchant: dict = Depends(get_current_merchant)):
     try:
-        product = products_collection.find_one({"id": product_id}, {"_id": 0})
+        product = products_collection.find_one({
+            "id": product_id, 
+            "merchant_id": current_merchant["id"]
+        }, {"_id": 0})
+        
         if not product:
-            raise HTTPException(status_code=404, detail="Product not found")
+            raise HTTPException(status_code=404, detail="Produit introuvable")
         return product
     except HTTPException:
         raise
@@ -276,15 +392,23 @@ async def get_product(product_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/api/products/{product_id}", response_model=Product)
-async def update_product(product_id: str, product_update: ProductUpdate):
+async def update_product(
+    product_id: str, 
+    product_update: ProductUpdate,
+    current_merchant: dict = Depends(get_current_merchant)
+):
     try:
         update_data = {k: v for k, v in product_update.dict().items() if v is not None}
         update_data["updated_at"] = datetime.now()
         
         # Recalculate margin if price or cost_price changed
-        existing_product = products_collection.find_one({"id": product_id}, {"_id": 0})
+        existing_product = products_collection.find_one({
+            "id": product_id, 
+            "merchant_id": current_merchant["id"]
+        }, {"_id": 0})
+        
         if not existing_product:
-            raise HTTPException(status_code=404, detail="Product not found")
+            raise HTTPException(status_code=404, detail="Produit introuvable")
         
         new_price = update_data.get("price", existing_product.get("price"))
         new_cost_price = update_data.get("cost_price", existing_product.get("cost_price"))
@@ -294,14 +418,18 @@ async def update_product(product_id: str, product_update: ProductUpdate):
             update_data["margin"] = round(margin, 2)
         
         result = products_collection.update_one(
-            {"id": product_id},
+            {"id": product_id, "merchant_id": current_merchant["id"]},
             {"$set": update_data}
         )
         
         if result.modified_count == 0:
-            raise HTTPException(status_code=404, detail="Product not found")
+            raise HTTPException(status_code=404, detail="Produit introuvable")
         
-        updated_product = products_collection.find_one({"id": product_id}, {"_id": 0})
+        updated_product = products_collection.find_one({
+            "id": product_id, 
+            "merchant_id": current_merchant["id"]
+        }, {"_id": 0})
+        
         logger.info(f"Updated product: {product_id}")
         return updated_product
     except HTTPException:
@@ -311,14 +439,18 @@ async def update_product(product_id: str, product_update: ProductUpdate):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/products/{product_id}")
-async def delete_product(product_id: str):
+async def delete_product(product_id: str, current_merchant: dict = Depends(get_current_merchant)):
     try:
-        result = products_collection.delete_one({"id": product_id})
+        result = products_collection.delete_one({
+            "id": product_id, 
+            "merchant_id": current_merchant["id"]
+        })
+        
         if result.deleted_count == 0:
-            raise HTTPException(status_code=404, detail="Product not found")
+            raise HTTPException(status_code=404, detail="Produit introuvable")
         
         logger.info(f"Deleted product: {product_id}")
-        return {"message": "Product deleted successfully"}
+        return {"message": "Produit supprimé avec succès"}
     except HTTPException:
         raise
     except Exception as e:
@@ -326,13 +458,15 @@ async def delete_product(product_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/dashboard/stats")
-async def get_dashboard_stats():
+async def get_dashboard_stats(current_merchant: dict = Depends(get_current_merchant)):
     try:
-        total_products = products_collection.count_documents({})
+        merchant_id = current_merchant["id"]
+        
+        total_products = products_collection.count_documents({"merchant_id": merchant_id})
         
         # Count products with low stock using their individual thresholds
         low_stock_pipeline = [
-            {"$match": {"$expr": {"$lte": ["$stock_quantity", "$low_stock_threshold"]}}},
+            {"$match": {"merchant_id": merchant_id, "$expr": {"$lte": ["$stock_quantity", "$low_stock_threshold"]}}},
             {"$count": "low_stock_count"}
         ]
         low_stock_result = list(products_collection.aggregate(low_stock_pipeline))
@@ -340,6 +474,7 @@ async def get_dashboard_stats():
         
         # Total stock value
         pipeline = [
+            {"$match": {"merchant_id": merchant_id}},
             {"$group": {
                 "_id": None,
                 "total_value": {"$sum": {"$multiply": ["$price", "$stock_quantity"]}},
@@ -353,6 +488,7 @@ async def get_dashboard_stats():
         
         # Category breakdown
         category_pipeline = [
+            {"$match": {"merchant_id": merchant_id}},
             {"$group": {
                 "_id": "$category",
                 "count": {"$sum": 1},
@@ -368,18 +504,25 @@ async def get_dashboard_stats():
             "total_stock_value": round(total_value, 2),
             "total_cost_value": round(total_cost, 2),
             "estimated_profit": round(total_value - total_cost, 2),
-            "category_breakdown": category_stats
+            "category_breakdown": category_stats,
+            "merchant_info": {
+                "business_name": current_merchant["profile"]["business_name"],
+                "business_type": current_merchant["profile"]["business_type"]
+            }
         }
     except Exception as e:
         logger.error(f"Error fetching dashboard stats: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/alerts/low-stock", response_model=List[StockAlert])
-async def get_low_stock_alerts():
+async def get_low_stock_alerts(current_merchant: dict = Depends(get_current_merchant)):
     try:
         # Find products where stock_quantity <= low_stock_threshold
         products = list(products_collection.find(
-            {"$expr": {"$lte": ["$stock_quantity", "$low_stock_threshold"]}},
+            {
+                "merchant_id": current_merchant["id"],
+                "$expr": {"$lte": ["$stock_quantity", "$low_stock_threshold"]}
+            },
             {"_id": 0, "id": 1, "name": 1, "stock_quantity": 1, "low_stock_threshold": 1}
         ))
         
@@ -399,10 +542,10 @@ async def get_low_stock_alerts():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/export/products")
-async def export_products():
-    """Export all products in standardized JSON format for external systems"""
+async def export_products(current_merchant: dict = Depends(get_current_merchant)):
+    """Export merchant's products in standardized JSON format for external systems"""
     try:
-        products = list(products_collection.find({}, {"_id": 0}))
+        products = list(products_collection.find({"merchant_id": current_merchant["id"]}, {"_id": 0}))
         
         # Standardized export format
         export_data = {
@@ -410,7 +553,12 @@ async def export_products():
                 "timestamp": datetime.now().isoformat(),
                 "total_products": len(products),
                 "format_version": "1.0",
-                "standard": "EAN13_JSON"
+                "standard": "LOCAL_SHOP_PRO_JSON",
+                "merchant": {
+                    "id": current_merchant["id"],
+                    "business_name": current_merchant["profile"]["business_name"],
+                    "location": current_merchant["profile"]["location"]
+                }
             },
             "products": products
         }
@@ -418,6 +566,46 @@ async def export_products():
         return export_data
     except Exception as e:
         logger.error(f"Error exporting products: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Public endpoint for future customer app
+@app.get("/api/public/search")
+async def search_products_public(
+    latitude: float,
+    longitude: float,
+    radius_km: float = 10,
+    category: Optional[str] = None,
+    search: Optional[str] = None
+):
+    """Public endpoint for customer app to search products by location"""
+    try:
+        # This is a placeholder for your future customer app
+        # It will search for products within radius and return with merchant info
+        
+        query = {"is_available": True}
+        if category:
+            query["category"] = category
+        if search:
+            query["$or"] = [
+                {"name": {"$regex": search, "$options": "i"}},
+                {"description": {"$regex": search, "$options": "i"}}
+            ]
+        
+        # For now, return structure that your future app can use
+        return {
+            "search_params": {
+                "latitude": latitude,
+                "longitude": longitude,
+                "radius_km": radius_km,
+                "category": category,
+                "search": search
+            },
+            "message": "Endpoint prêt pour l'application client",
+            "note": "Implémentation complète prévue pour l'app de recherche"
+        }
+    
+    except Exception as e:
+        logger.error(f"Error in public search: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

@@ -4,6 +4,9 @@ import './App.css';
 const API_BASE_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
 
 function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authView, setAuthView] = useState('login'); // 'login' or 'register'
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [subcategories, setSubcategories] = useState({});
@@ -16,6 +19,30 @@ function App() {
   const [showProductForm, setShowProductForm] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
 
+  const [loginForm, setLoginForm] = useState({
+    email: '',
+    password: ''
+  });
+
+  const [registerForm, setRegisterForm] = useState({
+    email: '',
+    password: '',
+    confirmPassword: '',
+    profile: {
+      business_name: '',
+      business_type: '',
+      siret: '',
+      phone: '',
+      location: {
+        address: '',
+        city: '',
+        postal_code: '',
+        country: 'France'
+      },
+      description: ''
+    }
+  });
+
   const [productForm, setProductForm] = useState({
     name: '',
     barcode: '',
@@ -26,27 +53,164 @@ function App() {
     category: '',
     subcategory: '',
     description: '',
-    supplier: ''
+    supplier: '',
+    is_available: true
   });
 
+  // Check authentication on app load
   useEffect(() => {
-    fetchCategories();
-    fetchDashboardStats();
-    fetchLowStockAlerts();
-    if (currentView === 'products') {
-      fetchProducts();
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      fetchUserProfile(token);
     }
   }, []);
 
   useEffect(() => {
-    if (currentView === 'products') {
+    if (isAuthenticated) {
+      fetchCategories();
+      fetchDashboardStats();
+      fetchLowStockAlerts();
+      if (currentView === 'products') {
+        fetchProducts();
+      }
+    }
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (isAuthenticated && currentView === 'products') {
       fetchProducts();
     }
-  }, [currentView, searchTerm, selectedCategory]);
+  }, [currentView, searchTerm, selectedCategory, isAuthenticated]);
+
+  const apiCall = async (endpoint, options = {}) => {
+    const token = localStorage.getItem('auth_token');
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(token && { 'Authorization': `Bearer ${token}` }),
+      ...options.headers
+    };
+
+    const response = await fetch(`${API_BASE_URL}/${endpoint}`, {
+      ...options,
+      headers
+    });
+
+    if (response.status === 401) {
+      logout();
+      throw new Error('Session expirée');
+    }
+
+    return response;
+  };
+
+  const fetchUserProfile = async (token) => {
+    try {
+      localStorage.setItem('auth_token', token);
+      const response = await apiCall('api/auth/profile');
+      if (response.ok) {
+        const userData = await response.json();
+        setCurrentUser(userData);
+        setIsAuthenticated(true);
+      } else {
+        logout();
+      }
+    } catch (error) {
+      console.error('Error fetching profile:', error);
+      logout();
+    }
+  };
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setIsLoading(true);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(loginForm)
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        await fetchUserProfile(data.access_token);
+        setLoginForm({ email: '', password: '' });
+      } else {
+        const errorData = await response.json();
+        alert(`Erreur: ${errorData.detail}`);
+      }
+    } catch (error) {
+      console.error('Login error:', error);
+      alert('Erreur lors de la connexion');
+    }
+    setIsLoading(false);
+  };
+
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    
+    if (registerForm.password !== registerForm.confirmPassword) {
+      alert('Les mots de passe ne correspondent pas');
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      const registrationData = {
+        email: registerForm.email,
+        password: registerForm.password,
+        profile: registerForm.profile
+      };
+
+      const response = await fetch(`${API_BASE_URL}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(registrationData)
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        await fetchUserProfile(data.access_token);
+        setRegisterForm({
+          email: '',
+          password: '',
+          confirmPassword: '',
+          profile: {
+            business_name: '',
+            business_type: '',
+            siret: '',
+            phone: '',
+            location: {
+              address: '',
+              city: '',
+              postal_code: '',
+              country: 'France'
+            },
+            description: ''
+          }
+        });
+      } else {
+        const errorData = await response.json();
+        alert(`Erreur: ${errorData.detail}`);
+      }
+    } catch (error) {
+      console.error('Registration error:', error);
+      alert('Erreur lors de l\'inscription');
+    }
+    setIsLoading(false);
+  };
+
+  const logout = () => {
+    localStorage.removeItem('auth_token');
+    setIsAuthenticated(false);
+    setCurrentUser(null);
+    setCurrentView('dashboard');
+  };
 
   const fetchCategories = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/categories`);
+      const response = await apiCall('api/categories');
       const data = await response.json();
       setCategories(data.categories);
       setSubcategories(data.subcategories);
@@ -58,13 +222,13 @@ function App() {
   const fetchProducts = async () => {
     setIsLoading(true);
     try {
-      let url = `${API_BASE_URL}/api/products`;
+      let url = 'api/products';
       const params = new URLSearchParams();
       if (selectedCategory) params.append('category', selectedCategory);
       if (searchTerm) params.append('search', searchTerm);
       if (params.toString()) url += `?${params.toString()}`;
 
-      const response = await fetch(url);
+      const response = await apiCall(url);
       const data = await response.json();
       setProducts(data);
     } catch (error) {
@@ -75,7 +239,7 @@ function App() {
 
   const fetchDashboardStats = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/dashboard/stats`);
+      const response = await apiCall('api/dashboard/stats');
       const data = await response.json();
       setDashboardStats(data);
     } catch (error) {
@@ -85,7 +249,7 @@ function App() {
 
   const fetchLowStockAlerts = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/alerts/low-stock`);
+      const response = await apiCall('api/alerts/low-stock');
       const data = await response.json();
       setLowStockAlerts(data);
     } catch (error) {
@@ -108,15 +272,12 @@ function App() {
 
       const method = editingProduct ? 'PUT' : 'POST';
       const url = editingProduct 
-        ? `${API_BASE_URL}/api/products/${editingProduct.id}` 
-        : `${API_BASE_URL}/api/products`;
+        ? `api/products/${editingProduct.id}` 
+        : 'api/products';
 
-      const response = await fetch(url, {
+      const response = await apiCall(url, {
         method,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(productData),
+        body: JSON.stringify(productData)
       });
 
       if (response.ok) {
@@ -143,8 +304,8 @@ function App() {
     }
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/products/${productId}`, {
-        method: 'DELETE',
+      const response = await apiCall(`api/products/${productId}`, {
+        method: 'DELETE'
       });
 
       if (response.ok) {
@@ -172,7 +333,8 @@ function App() {
       category: product.category,
       subcategory: product.subcategory || '',
       description: product.description || '',
-      supplier: product.supplier || ''
+      supplier: product.supplier || '',
+      is_available: product.is_available !== false
     });
     setShowProductForm(true);
   };
@@ -188,20 +350,21 @@ function App() {
       category: '',
       subcategory: '',
       description: '',
-      supplier: ''
+      supplier: '',
+      is_available: true
     });
   };
 
   const handleExportData = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/export/products`);
+      const response = await apiCall('api/export/products');
       const data = await response.json();
       
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `stock-export-${new Date().toISOString().split('T')[0]}.json`;
+      a.download = `${currentUser?.profile?.business_name || 'stock'}-export-${new Date().toISOString().split('T')[0]}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -212,8 +375,284 @@ function App() {
     }
   };
 
+  // Authentication views
+  const renderLogin = () => (
+    <div className="min-h-screen bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center p-4">
+      <div className="bg-white rounded-lg shadow-xl p-8 w-full max-w-md">
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold text-gray-900">🏪 Local Shop Pro</h1>
+          <p className="text-gray-600 mt-2">Connectez-vous à votre espace</p>
+        </div>
+
+        <form onSubmit={handleLogin} className="space-y-6">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
+            <input
+              type="email"
+              required
+              value={loginForm.email}
+              onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              placeholder="votre@email.com"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Mot de passe</label>
+            <input
+              type="password"
+              required
+              value={loginForm.password}
+              onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              placeholder="••••••••"
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={isLoading}
+            className="w-full py-2 px-4 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-50"
+          >
+            {isLoading ? 'Connexion...' : 'Se connecter'}
+          </button>
+        </form>
+
+        <div className="mt-6 text-center">
+          <button
+            onClick={() => setAuthView('register')}
+            className="text-blue-500 hover:text-blue-600"
+          >
+            Pas encore de compte ? S'inscrire
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderRegister = () => (
+    <div className="min-h-screen bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center p-4">
+      <div className="bg-white rounded-lg shadow-xl p-8 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold text-gray-900">🏪 Local Shop Pro</h1>
+          <p className="text-gray-600 mt-2">Créez votre compte commerçant</p>
+        </div>
+
+        <form onSubmit={handleRegister} className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Email *</label>
+              <input
+                type="email"
+                required
+                value={registerForm.email}
+                onChange={(e) => setRegisterForm({ ...registerForm, email: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Nom du commerce *</label>
+              <input
+                type="text"
+                required
+                value={registerForm.profile.business_name}
+                onChange={(e) => setRegisterForm({ 
+                  ...registerForm, 
+                  profile: { ...registerForm.profile, business_name: e.target.value }
+                })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Mot de passe *</label>
+              <input
+                type="password"
+                required
+                value={registerForm.password}
+                onChange={(e) => setRegisterForm({ ...registerForm, password: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Confirmer mot de passe *</label>
+              <input
+                type="password"
+                required
+                value={registerForm.confirmPassword}
+                onChange={(e) => setRegisterForm({ ...registerForm, confirmPassword: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Type de commerce *</label>
+              <input
+                type="text"
+                required
+                value={registerForm.profile.business_type}
+                onChange={(e) => setRegisterForm({ 
+                  ...registerForm, 
+                  profile: { ...registerForm.profile, business_type: e.target.value }
+                })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="ex: Boulangerie, Boucherie, Artisanat..."
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Téléphone</label>
+              <input
+                type="text"
+                value={registerForm.profile.phone}
+                onChange={(e) => setRegisterForm({ 
+                  ...registerForm, 
+                  profile: { ...registerForm.profile, phone: e.target.value }
+                })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          <div className="border-t pt-6">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">📍 Localisation du commerce</h3>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Adresse *</label>
+                <input
+                  type="text"
+                  required
+                  value={registerForm.profile.location.address}
+                  onChange={(e) => setRegisterForm({ 
+                    ...registerForm, 
+                    profile: { 
+                      ...registerForm.profile, 
+                      location: { ...registerForm.profile.location, address: e.target.value }
+                    }
+                  })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="123 rue de la République"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Ville *</label>
+                <input
+                  type="text"
+                  required
+                  value={registerForm.profile.location.city}
+                  onChange={(e) => setRegisterForm({ 
+                    ...registerForm, 
+                    profile: { 
+                      ...registerForm.profile, 
+                      location: { ...registerForm.profile.location, city: e.target.value }
+                    }
+                  })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="Paris"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Code postal *</label>
+                <input
+                  type="text"
+                  required
+                  value={registerForm.profile.location.postal_code}
+                  onChange={(e) => setRegisterForm({ 
+                    ...registerForm, 
+                    profile: { 
+                      ...registerForm.profile, 
+                      location: { ...registerForm.profile.location, postal_code: e.target.value }
+                    }
+                  })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="75001"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">SIRET (optionnel)</label>
+                <input
+                  type="text"
+                  value={registerForm.profile.siret}
+                  onChange={(e) => setRegisterForm({ 
+                    ...registerForm, 
+                    profile: { ...registerForm.profile, siret: e.target.value }
+                  })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Description (optionnelle)</label>
+            <textarea
+              value={registerForm.profile.description}
+              onChange={(e) => setRegisterForm({ 
+                ...registerForm, 
+                profile: { ...registerForm.profile, description: e.target.value }
+              })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              rows="3"
+              placeholder="Décrivez votre commerce..."
+            />
+          </div>
+
+          <div className="flex gap-4 pt-4">
+            <button
+              type="button"
+              onClick={() => setAuthView('login')}
+              className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              Retour connexion
+            </button>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="flex-1 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-50"
+            >
+              {isLoading ? 'Création...' : 'Créer mon compte'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+
+  // Main app views (same as before but with authentication)
   const renderDashboard = () => (
     <div className="space-y-6">
+      <div className="bg-white rounded-lg shadow-md p-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900">
+              Bonjour, {currentUser?.profile?.business_name}! 👋
+            </h2>
+            <p className="text-gray-600">{currentUser?.profile?.business_type}</p>
+            <p className="text-sm text-gray-500">
+              📍 {currentUser?.profile?.location?.city}, {currentUser?.profile?.location?.postal_code}
+            </p>
+          </div>
+          <button
+            onClick={logout}
+            className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
+          >
+            Déconnexion
+          </button>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <div className="bg-white rounded-lg shadow-md p-6">
           <div className="flex items-center">
@@ -279,7 +718,7 @@ function App() {
             {lowStockAlerts.slice(0, 5).map((alert) => (
               <div key={alert.product_id} className="flex justify-between items-center p-3 bg-red-50 rounded-lg">
                 <span className="font-medium text-red-800">{alert.name}</span>
-                <span className="text-red-600">Stock: {alert.current_stock}</span>
+                <span className="text-red-600">Stock: {alert.current_stock} (Seuil: {alert.threshold})</span>
               </div>
             ))}
           </div>
@@ -335,7 +774,7 @@ function App() {
           >
             <option value="">Toutes catégories</option>
             {categories.map((cat) => (
-              <option key={cat} value={cat}>{cat}</option>
+              <option key={cat} value={cat}>{cat.replace(/_/g, ' ')}</option>
             ))}
           </select>
         </div>
@@ -362,6 +801,7 @@ function App() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Prix</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stock</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Catégorie</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Disponible</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
@@ -395,10 +835,19 @@ function App() {
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                      {product.category}
+                      {product.category.replace(/_/g, ' ')}
                       {product.subcategory && (
-                        <div className="text-xs text-gray-500">{product.subcategory}</div>
+                        <div className="text-xs text-gray-500">{product.subcategory.replace(/_/g, ' ')}</div>
                       )}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                        product.is_available !== false 
+                          ? 'bg-green-100 text-green-800' 
+                          : 'bg-red-100 text-red-800'
+                      }`}>
+                        {product.is_available !== false ? '✅ Oui' : '❌ Non'}
+                      </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
                       <button
@@ -535,7 +984,7 @@ function App() {
                 >
                   <option value="">Sélectionner</option>
                   {categories.map((cat) => (
-                    <option key={cat} value={cat}>{cat}</option>
+                    <option key={cat} value={cat}>{cat.replace(/_/g, ' ')}</option>
                   ))}
                 </select>
               </div>
@@ -550,7 +999,7 @@ function App() {
                   <option value="">Sélectionner</option>
                   {productForm.category && subcategories[productForm.category] && 
                     subcategories[productForm.category].map((subcat) => (
-                      <option key={subcat} value={subcat}>{subcat}</option>
+                      <option key={subcat} value={subcat}>{subcat.replace(/_/g, ' ')}</option>
                     ))
                   }
                 </select>
@@ -575,6 +1024,19 @@ function App() {
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 rows="3"
               />
+            </div>
+
+            <div className="flex items-center">
+              <input
+                type="checkbox"
+                id="is_available"
+                checked={productForm.is_available}
+                onChange={(e) => setProductForm({ ...productForm, is_available: e.target.checked })}
+                className="mr-2"
+              />
+              <label htmlFor="is_available" className="text-sm text-gray-700">
+                Disponible pour recherche publique (clients)
+              </label>
             </div>
 
             <div className="flex gap-4 pt-4">
@@ -603,13 +1065,18 @@ function App() {
     </div>
   );
 
+  // Main render logic
+  if (!isAuthenticated) {
+    return authView === 'login' ? renderLogin() : renderRegister();
+  }
+
   return (
     <div className="min-h-screen bg-gray-100">
       <header className="bg-white shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
             <div className="flex items-center">
-              <h1 className="text-2xl font-bold text-gray-900">📦 Stock Manager</h1>
+              <h1 className="text-2xl font-bold text-gray-900">🏪 Local Shop Pro</h1>
             </div>
             <nav className="flex space-x-4">
               <button
