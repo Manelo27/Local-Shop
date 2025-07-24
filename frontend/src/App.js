@@ -496,15 +496,32 @@ function App() {
               </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Quantité en stock *</label>
-              <input
-                type="number"
-                required
-                value={productForm.stock_quantity}
-                onChange={(e) => setProductForm({ ...productForm, stock_quantity: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Quantité en stock *</label>
+                <input
+                  type="number"
+                  required
+                  value={productForm.stock_quantity}
+                  onChange={(e) => setProductForm({ ...productForm, stock_quantity: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Seuil alerte stock *
+                  <span className="text-xs text-gray-500 block">Alerte si stock ≤ cette valeur</span>
+                </label>
+                <input
+                  type="number"
+                  required
+                  min="0"
+                  value={productForm.low_stock_threshold}
+                  onChange={(e) => setProductForm({ ...productForm, low_stock_threshold: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="10"
+                />
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
