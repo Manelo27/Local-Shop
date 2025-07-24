@@ -203,7 +203,14 @@ async def delete_product(product_id: str):
 async def get_dashboard_stats():
     try:
         total_products = products_collection.count_documents({})
-        low_stock_products = products_collection.count_documents({"stock_quantity": {"$lte": 10}})
+        
+        # Count products with low stock using their individual thresholds
+        low_stock_pipeline = [
+            {"$match": {"$expr": {"$lte": ["$stock_quantity", "$low_stock_threshold"]}}},
+            {"$count": "low_stock_count"}
+        ]
+        low_stock_result = list(products_collection.aggregate(low_stock_pipeline))
+        low_stock_products = low_stock_result[0]["low_stock_count"] if low_stock_result else 0
         
         # Total stock value
         pipeline = [
