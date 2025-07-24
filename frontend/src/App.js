@@ -168,6 +168,7 @@ function App() {
       price: product.price.toString(),
       cost_price: product.cost_price ? product.cost_price.toString() : '',
       stock_quantity: product.stock_quantity.toString(),
+      low_stock_threshold: (product.low_stock_threshold || 10).toString(),
       category: product.category,
       subcategory: product.subcategory || '',
       description: product.description || '',
