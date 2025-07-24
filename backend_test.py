@@ -227,29 +227,83 @@ class StockManagementAPITester:
         
         return self.run_test("Update Product", "PUT", f"api/products/{product_id}", 200, update_data)
 
-    def test_dashboard_stats(self):
-        """Test dashboard statistics"""
-        success, response = self.run_test("Dashboard Stats", "GET", "api/dashboard/stats", 200)
+    def test_dashboard_stats_with_custom_thresholds(self):
+        """Test dashboard statistics with custom thresholds"""
+        success, response = self.run_test("Dashboard Stats with Custom Thresholds", "GET", "api/dashboard/stats", 200)
         if success:
             expected_fields = ["total_products", "low_stock_alerts", "total_stock_value", "estimated_profit"]
             missing_fields = [field for field in expected_fields if field not in response]
             if not missing_fields:
                 print("   ✓ All expected dashboard fields present")
+                # Check if low stock alerts count reflects custom thresholds
+                low_stock_count = response.get("low_stock_alerts", 0)
+                print(f"   ✓ Low stock alerts count: {low_stock_count}")
+                # Should have at least 2 alerts (Baguette and Légumes frais)
+                if low_stock_count >= 2:
+                    print("   ✓ Custom thresholds appear to be working in dashboard")
+                else:
+                    print("   ⚠️ Expected at least 2 low stock alerts with custom thresholds")
             else:
                 print(f"   ⚠️ Missing dashboard fields: {missing_fields}")
         
         return success, response
 
-    def test_low_stock_alerts(self):
-        """Test low stock alerts"""
-        success, response = self.run_test("Low Stock Alerts", "GET", "api/alerts/low-stock", 200)
+    def test_low_stock_alerts_with_custom_thresholds(self):
+        """Test low stock alerts with custom thresholds"""
+        success, response = self.run_test("Low Stock Alerts with Custom Thresholds", "GET", "api/alerts/low-stock", 200)
         if success and isinstance(response, list):
             print(f"   ✓ Found {len(response)} low stock alerts")
-            if response:
-                # Check if our artisanat product (stock=5) is in alerts
-                alert_names = [alert.get("name", "") for alert in response]
-                if "Vase fait-main" in alert_names:
-                    print("   ✓ Low stock product correctly identified")
+            
+            # Check for specific products that should be in alerts
+            alert_names = [alert.get("name", "") for alert in response]
+            alert_details = {alert.get("name"): {"stock": alert.get("current_stock"), "threshold": alert.get("threshold")} for alert in response}
+            
+            # Baguette should be in alerts (stock: 25, threshold: 30)
+            if "Baguette" in alert_names:
+                baguette_alert = alert_details["Baguette"]
+                if baguette_alert["stock"] == 25 and baguette_alert["threshold"] == 30:
+                    print("   ✓ Baguette correctly identified with custom threshold")
+                else:
+                    print(f"   ⚠️ Baguette alert data incorrect: {baguette_alert}")
+            else:
+                print("   ⚠️ Baguette not found in alerts (should be there)")
+            
+            # Légumes frais should be in alerts (stock: 8, threshold: 15)
+            if "Légumes frais" in alert_names:
+                legumes_alert = alert_details["Légumes frais"]
+                if legumes_alert["stock"] == 8 and legumes_alert["threshold"] == 15:
+                    print("   ✓ Légumes frais correctly identified with custom threshold")
+                else:
+                    print(f"   ⚠️ Légumes frais alert data incorrect: {legumes_alert}")
+            else:
+                print("   ⚠️ Légumes frais not found in alerts (should be there)")
+            
+            # Montre de luxe should NOT be in alerts (stock: 3, threshold: 2)
+            if "Montre de luxe" in alert_names:
+                print("   ⚠️ Montre de luxe found in alerts (should NOT be there)")
+            else:
+                print("   ✓ Montre de luxe correctly NOT in alerts")
+        
+        return success, response
+
+    def test_update_product_threshold(self):
+        """Test updating a product's low stock threshold"""
+        if not self.created_products:
+            print("⚠️ No products created yet, skipping threshold update test")
+            return False
+        
+        product_id = self.created_products[0]
+        update_data = {
+            "low_stock_threshold": 50,  # Change threshold to trigger alert
+            "stock_quantity": 40  # Stock below new threshold
+        }
+        
+        success, response = self.run_test("Update Product Threshold", "PUT", f"api/products/{product_id}", 200, update_data)
+        if success:
+            if response.get("low_stock_threshold") == 50:
+                print("   ✓ Low stock threshold updated correctly")
+            else:
+                print(f"   ⚠️ Threshold update issue: expected 50, got {response.get('low_stock_threshold')}")
         
         return success, response
 
