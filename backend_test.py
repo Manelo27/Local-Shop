@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""
+Backend API Tests for Stock Management Application
+Tests all endpoints with French commerce data
+"""
+
+import requests
+import json
+import sys
+from datetime import datetime
+import uuid
+
+class StockManagementAPITester:
+    def __init__(self, base_url="https://9c19a8ee-cbd2-4c97-ba8a-814725eddddd.preview.emergentagent.com"):
+        self.base_url = base_url
+        self.tests_run = 0
+        self.tests_passed = 0
+        self.created_products = []  # Track created products for cleanup
+
+    def log_test(self, name, success, details=""):
+        """Log test results"""
+        self.tests_run += 1
+        if success:
+            self.tests_passed += 1
+            print(f"✅ {name} - PASSED {details}")
+        else:
+            print(f"❌ {name} - FAILED {details}")
+        return success
+
+    def run_test(self, name, method, endpoint, expected_status, data=None, params=None):
+        """Run a single API test"""
+        url = f"{self.base_url}/{endpoint}"
+        headers = {'Content-Type': 'application/json'}
+        
+        print(f"\n🔍 Testing {name}...")
+        print(f"   URL: {url}")
+        
+        try:
+            if method == 'GET':
+                response = requests.get(url, headers=headers, params=params)
+            elif method == 'POST':
+                response = requests.post(url, json=data, headers=headers)
+            elif method == 'PUT':
+                response = requests.put(url, json=data, headers=headers)
+            elif method == 'DELETE':
+                response = requests.delete(url, headers=headers)
+
+            success = response.status_code == expected_status
+            
+            if success:
+                try:
+                    response_data = response.json()
+                    details = f"- Status: {response.status_code}"
+                    if isinstance(response_data, dict) and len(response_data) <= 3:
+                        details += f" - Response: {response_data}"
+                    elif isinstance(response_data, list) and len(response_data) <= 2:
+                        details += f" - Items: {len(response_data)}"
+                    else:
+                        details += f" - Response received"
+                except:
+                    details = f"- Status: {response.status_code} - Non-JSON response"
+            else:
+                try:
+                    error_data = response.json()
+                    details = f"- Expected {expected_status}, got {response.status_code} - Error: {error_data}"
+                except:
+                    details = f"- Expected {expected_status}, got {response.status_code} - {response.text[:100]}"
+
+            self.log_test(name, success, details)
+            return success, response.json() if success and response.content else {}
+
+        except Exception as e:
+            self.log_test(name, False, f"- Exception: {str(e)}")
+            return False, {}
+
+    def test_health_check(self):
+        """Test health endpoint"""
+        return self.run_test("Health Check", "GET", "api/health", 200)
+
+    def test_get_categories(self):
+        """Test categories endpoint"""
+        success, response = self.run_test("Get Categories", "GET", "api/categories", 200)
+        if success:
+            # Verify expected categories are present
+            expected_categories = ["ALIMENTAIRE", "BOISSONS", "ARTISANAT"]
+            categories = response.get("categories", [])
+            subcategories = response.get("subcategories", {})
+            
+            categories_found = all(cat in categories for cat in expected_categories)
+            subcats_found = "BOUCHERIE" in subcategories.get("ALIMENTAIRE", [])
+            
+            if categories_found and subcats_found:
+                print("   ✓ Expected categories and subcategories found")
+            else:
+                print("   ⚠️ Some expected categories/subcategories missing")
+        
+        return success, response
+
+    def test_create_product_boucherie(self):
+        """Test creating a boucherie product"""
+        product_data = {
+            "name": "Steak de bœuf",
+            "barcode": "1234567890123",
+            "price": 25.50,
+            "cost_price": 18.00,
+            "stock_quantity": 15,
+            "category": "ALIMENTAIRE",
+            "subcategory": "BOUCHERIE",
+            "description": "Steak de bœuf premium",
+            "supplier": "Boucherie Dupont"
+        }
+        
+        success, response = self.run_test("Create Boucherie Product", "POST", "api/products", 201, product_data)
+        if success and "id" in response:
+            self.created_products.append(response["id"])
+            # Verify margin calculation
+            if "margin" in response:
+                expected_margin = ((25.50 - 18.00) / 25.50) * 100
+                actual_margin = response.get("margin", 0)
+                if abs(actual_margin - expected_margin) < 0.1:
+                    print("   ✓ Margin calculated correctly")
+                else:
+                    print(f"   ⚠️ Margin calculation issue: expected ~{expected_margin:.1f}%, got {actual_margin}%")
+        
+        return success, response
+
+    def test_create_product_artisanat(self):
+        """Test creating an artisanat product"""
+        product_data = {
+            "name": "Vase fait-main",
+            "barcode": "9876543210987",
+            "price": 45.00,
+            "cost_price": 20.00,
+            "stock_quantity": 5,  # Low stock to trigger alert
+            "category": "ARTISANAT",
+            "subcategory": "FAIT_MAIN",
+            "description": "Vase en céramique fait à la main",
+            "supplier": "Atelier Céramique"
+        }
+        
+        success, response = self.run_test("Create Artisanat Product", "POST", "api/products", 201, product_data)
+        if success and "id" in response:
+            self.created_products.append(response["id"])
+        
+        return success, response
+
+    def test_get_products(self):
+        """Test getting all products"""
+        return self.run_test("Get All Products", "GET", "api/products", 200)
+
+    def test_get_products_with_filters(self):
+        """Test getting products with filters"""
+        # Test category filter
+        success1, _ = self.run_test("Get Products by Category", "GET", "api/products", 200, 
+                                   params={"category": "ALIMENTAIRE"})
+        
+        # Test search filter
+        success2, _ = self.run_test("Get Products by Search", "GET", "api/products", 200,
+                                   params={"search": "Steak"})
+        
+        return success1 and success2
+
+    def test_get_single_product(self):
+        """Test getting a single product"""
+        if not self.created_products:
+            print("⚠️ No products created yet, skipping single product test")
+            return False
+        
+        product_id = self.created_products[0]
+        return self.run_test("Get Single Product", "GET", f"api/products/{product_id}", 200)
+
+    def test_update_product(self):
+        """Test updating a product"""
+        if not self.created_products:
+            print("⚠️ No products created yet, skipping update test")
+            return False
+        
+        product_id = self.created_products[0]
+        update_data = {
+            "price": 28.00,
+            "stock_quantity": 20
+        }
+        
+        return self.run_test("Update Product", "PUT", f"api/products/{product_id}", 200, update_data)
+
+    def test_dashboard_stats(self):
+        """Test dashboard statistics"""
+        success, response = self.run_test("Dashboard Stats", "GET", "api/dashboard/stats", 200)
+        if success:
+            expected_fields = ["total_products", "low_stock_alerts", "total_stock_value", "estimated_profit"]
+            missing_fields = [field for field in expected_fields if field not in response]
+            if not missing_fields:
+                print("   ✓ All expected dashboard fields present")
+            else:
+                print(f"   ⚠️ Missing dashboard fields: {missing_fields}")
+        
+        return success, response
+
+    def test_low_stock_alerts(self):
+        """Test low stock alerts"""
+        success, response = self.run_test("Low Stock Alerts", "GET", "api/alerts/low-stock", 200)
+        if success and isinstance(response, list):
+            print(f"   ✓ Found {len(response)} low stock alerts")
+            if response:
+                # Check if our artisanat product (stock=5) is in alerts
+                alert_names = [alert.get("name", "") for alert in response]
+                if "Vase fait-main" in alert_names:
+                    print("   ✓ Low stock product correctly identified")
+        
+        return success, response
+
+    def test_export_products(self):
+        """Test product export"""
+        success, response = self.run_test("Export Products", "GET", "api/export/products", 200)
+        if success:
+            # Verify export format
+            expected_fields = ["export_info", "products"]
+            if all(field in response for field in expected_fields):
+                print("   ✓ Export format correct")
+                export_info = response.get("export_info", {})
+                if "timestamp" in export_info and "standard" in export_info:
+                    print("   ✓ Export metadata present")
+            else:
+                print("   ⚠️ Export format incomplete")
+        
+        return success, response
+
+    def test_delete_product(self):
+        """Test deleting a product"""
+        if not self.created_products:
+            print("⚠️ No products created yet, skipping delete test")
+            return False
+        
+        product_id = self.created_products.pop()  # Remove from tracking
+        return self.run_test("Delete Product", "DELETE", f"api/products/{product_id}", 200)
+
+    def cleanup_remaining_products(self):
+        """Clean up any remaining test products"""
+        print(f"\n🧹 Cleaning up {len(self.created_products)} remaining test products...")
+        for product_id in self.created_products:
+            try:
+                response = requests.delete(f"{self.base_url}/api/products/{product_id}")
+                if response.status_code == 200:
+                    print(f"   ✓ Cleaned up product {product_id}")
+                else:
+                    print(f"   ⚠️ Failed to clean up product {product_id}")
+            except Exception as e:
+                print(f"   ❌ Error cleaning up product {product_id}: {e}")
+
+    def run_all_tests(self):
+        """Run all API tests in sequence"""
+        print("🚀 Starting Stock Management API Tests")
+        print(f"📍 Testing against: {self.base_url}")
+        print("=" * 60)
+
+        # Basic connectivity tests
+        self.test_health_check()
+        self.test_get_categories()
+
+        # Product CRUD tests
+        self.test_create_product_boucherie()
+        self.test_create_product_artisanat()
+        self.test_get_products()
+        self.test_get_products_with_filters()
+        self.test_get_single_product()
+        self.test_update_product()
+
+        # Dashboard and analytics tests
+        self.test_dashboard_stats()
+        self.test_low_stock_alerts()
+        self.test_export_products()
+
+        # Cleanup test
+        self.test_delete_product()
+
+        # Final cleanup
+        self.cleanup_remaining_products()
+
+        # Print summary
+        print("\n" + "=" * 60)
+        print(f"📊 TEST SUMMARY")
+        print(f"   Tests Run: {self.tests_run}")
+        print(f"   Tests Passed: {self.tests_passed}")
+        print(f"   Tests Failed: {self.tests_run - self.tests_passed}")
+        print(f"   Success Rate: {(self.tests_passed/self.tests_run)*100:.1f}%")
+        
+        if self.tests_passed == self.tests_run:
+            print("🎉 ALL TESTS PASSED!")
+            return 0
+        else:
+            print("⚠️ SOME TESTS FAILED!")
+            return 1
+
+def main():
+    """Main test runner"""
+    tester = StockManagementAPITester()
+    return tester.run_all_tests()
+
+if __name__ == "__main__":
+    sys.exit(main())
