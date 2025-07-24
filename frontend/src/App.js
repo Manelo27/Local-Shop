@@ -367,7 +367,7 @@ function App() {
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {products.map((product) => (
-                  <tr key={product.id} className={product.stock_quantity <= 10 ? 'bg-red-50' : ''}>
+                  <tr key={product.id} className={product.stock_quantity <= (product.low_stock_threshold || 10) ? 'bg-red-50' : ''}>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div>
                         <div className="text-sm font-medium text-gray-900">{product.name}</div>
