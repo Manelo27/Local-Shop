@@ -37,6 +37,7 @@ class Product(BaseModel):
     price: float
     cost_price: Optional[float] = None
     stock_quantity: int
+    low_stock_threshold: int = 10  # Seuil personnalisable pour alerte stock faible
     category: str
     subcategory: Optional[str] = None
     description: Optional[str] = None
