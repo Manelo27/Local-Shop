@@ -51,6 +51,7 @@ class ProductUpdate(BaseModel):
     price: Optional[float] = None
     cost_price: Optional[float] = None
     stock_quantity: Optional[int] = None
+    low_stock_threshold: Optional[int] = None
     category: Optional[str] = None
     subcategory: Optional[str] = None
     description: Optional[str] = None
