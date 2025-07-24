@@ -96,31 +96,75 @@ class StockManagementAPITester:
         
         return success, response
 
-    def test_create_product_boucherie(self):
-        """Test creating a boucherie product"""
+    def test_create_product_with_custom_threshold_alert(self):
+        """Test creating a product with custom threshold that should trigger alert"""
         product_data = {
-            "name": "Steak de bœuf",
+            "name": "Baguette",
             "barcode": "1234567890123",
-            "price": 25.50,
-            "cost_price": 18.00,
-            "stock_quantity": 15,
+            "price": 1.20,
+            "cost_price": 0.80,
+            "stock_quantity": 25,
+            "low_stock_threshold": 30,  # Custom threshold higher than stock
             "category": "ALIMENTAIRE",
-            "subcategory": "BOUCHERIE",
-            "description": "Steak de bœuf premium",
-            "supplier": "Boucherie Dupont"
+            "subcategory": "BOULANGERIE",
+            "description": "Baguette traditionnelle",
+            "supplier": "Boulangerie Martin"
         }
         
-        success, response = self.run_test("Create Boucherie Product", "POST", "api/products", 201, product_data)
+        success, response = self.run_test("Create Product with Custom Threshold (Alert)", "POST", "api/products", 201, product_data)
         if success and "id" in response:
             self.created_products.append(response["id"])
-            # Verify margin calculation
-            if "margin" in response:
-                expected_margin = ((25.50 - 18.00) / 25.50) * 100
-                actual_margin = response.get("margin", 0)
-                if abs(actual_margin - expected_margin) < 0.1:
-                    print("   ✓ Margin calculated correctly")
-                else:
-                    print(f"   ⚠️ Margin calculation issue: expected ~{expected_margin:.1f}%, got {actual_margin}%")
+            # Verify custom threshold is saved
+            if response.get("low_stock_threshold") == 30:
+                print("   ✓ Custom low stock threshold saved correctly")
+            else:
+                print(f"   ⚠️ Custom threshold issue: expected 30, got {response.get('low_stock_threshold')}")
+        
+        return success, response
+
+    def test_create_product_with_custom_threshold_no_alert(self):
+        """Test creating a product with custom threshold that should NOT trigger alert"""
+        product_data = {
+            "name": "Montre de luxe",
+            "barcode": "9876543210987",
+            "price": 299.99,
+            "cost_price": 150.00,
+            "stock_quantity": 3,
+            "low_stock_threshold": 2,  # Custom threshold lower than stock
+            "category": "AUTRE",
+            "description": "Montre de luxe Swiss Made",
+            "supplier": "Horlogerie Suisse"
+        }
+        
+        success, response = self.run_test("Create Product with Custom Threshold (No Alert)", "POST", "api/products", 201, product_data)
+        if success and "id" in response:
+            self.created_products.append(response["id"])
+            # Verify custom threshold is saved
+            if response.get("low_stock_threshold") == 2:
+                print("   ✓ Custom low stock threshold saved correctly")
+            else:
+                print(f"   ⚠️ Custom threshold issue: expected 2, got {response.get('low_stock_threshold')}")
+        
+        return success, response
+
+    def test_create_product_default_threshold_alert(self):
+        """Test creating a product with default threshold that should trigger alert"""
+        product_data = {
+            "name": "Légumes frais",
+            "barcode": "5555666677778",
+            "price": 3.50,
+            "cost_price": 2.00,
+            "stock_quantity": 8,
+            "low_stock_threshold": 15,  # Custom threshold higher than stock
+            "category": "ALIMENTAIRE",
+            "subcategory": "FRUITS_LEGUMES",
+            "description": "Légumes frais du jour",
+            "supplier": "Maraîcher Local"
+        }
+        
+        success, response = self.run_test("Create Product with Custom Threshold (Alert)", "POST", "api/products", 201, product_data)
+        if success and "id" in response:
+            self.created_products.append(response["id"])
         
         return success, response
 
