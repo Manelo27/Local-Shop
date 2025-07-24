@@ -102,7 +102,8 @@ function App() {
         ...productForm,
         price: parseFloat(productForm.price),
         cost_price: productForm.cost_price ? parseFloat(productForm.cost_price) : null,
-        stock_quantity: parseInt(productForm.stock_quantity)
+        stock_quantity: parseInt(productForm.stock_quantity),
+        low_stock_threshold: parseInt(productForm.low_stock_threshold)
       };
 
       const method = editingProduct ? 'PUT' : 'POST';
